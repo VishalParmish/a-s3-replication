@@ -235,7 +235,7 @@ resource "aws_iam_role_policy" "codebuild_logging_policy" {
       {
         Effect = "Allow",
         Action = [
-          "s3:*",.
+          "s3:*",
           "lambda:*"
         ],
         Resource = "*"
