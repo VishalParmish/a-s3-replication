@@ -1,250 +1,165 @@
 provider "aws" {
-  region = "us-east-1"
+  region = "us-east-2" # Destination
 }
 
-# -- Lambda IAM Role --
-resource "aws_iam_role" "lambda_exec_role" {
-  name = "lambda-exec-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Action    = "sts:AssumeRole",
-      Principal = { Service = "lambda.amazonaws.com" },
-      Effect    = "Allow"
-    }]
-  })
+provider "aws" {
+  alias  = "east1"
+  region = "us-east-1" # Source
 }
 
-resource "aws_iam_role_policy_attachment" "lambda_exec_attach" {
-  role       = aws_iam_role.lambda_exec_role.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+# Create destination bucket
+resource "aws_s3_bucket" "destination" {
+  bucket = "tf-fixed-destination-bucket-67890"
 }
 
-# -- Lambda Function --
-resource "aws_lambda_function" "example_lambda" {
-  function_name = "example_lambda"
-  role          = aws_iam_role.lambda_exec_role.arn
-  handler       = "index.handler"
-  runtime       = "nodejs20.x"
-  s3_bucket     = aws_s3_bucket.artifact_bucket.bucket
-  s3_key        = "lambda.zip"
-
-  publish      = true
-  timeout      = 10
-  memory_size  = 128
-  
-#   filename         = "lambda.zip"
-#   source_code_hash = filebase64sha256("lambda.zip")
-}
-
-# -- API Gateway --
-resource "aws_api_gateway_rest_api" "example_api" {
-  name        = "example-api"
-  description = "API Gateway for Lambda"
-}
-
-resource "aws_api_gateway_resource" "lambda_resource" {
-  rest_api_id = aws_api_gateway_rest_api.example_api.id
-  parent_id   = aws_api_gateway_rest_api.example_api.root_resource_id
-  path_part   = "lambda"
-}
-
-resource "aws_api_gateway_method" "any_method" {
-  rest_api_id   = aws_api_gateway_rest_api.example_api.id
-  resource_id   = aws_api_gateway_resource.lambda_resource.id
-  http_method   = "ANY"
-  authorization = "NONE"
-}
-
-resource "aws_api_gateway_integration" "lambda_integration" {
-  rest_api_id             = aws_api_gateway_rest_api.example_api.id
-  resource_id             = aws_api_gateway_resource.lambda_resource.id
-  http_method             = aws_api_gateway_method.any_method.http_method
-  integration_http_method = "POST"
-  type                    = "AWS_PROXY"
-  uri                     = aws_lambda_function.example_lambda.invoke_arn
-}
-
-resource "aws_lambda_permission" "apigw_lambda" {
-  statement_id  = "AllowAPIGatewayInvoke"
-  action        = "lambda:InvokeFunction"
-  function_name = aws_lambda_function.example_lambda.function_name
-  principal     = "apigateway.amazonaws.com"
-  source_arn    = "${aws_api_gateway_rest_api.example_api.execution_arn}/*/*"
-}
-
-resource "aws_api_gateway_deployment" "deployment" {
-  depends_on  = [aws_api_gateway_integration.lambda_integration]
-  rest_api_id = aws_api_gateway_rest_api.example_api.id
-}
-
-resource "aws_api_gateway_stage" "dev" {
-  stage_name    = "dev"
-  rest_api_id   = aws_api_gateway_rest_api.example_api.id
-  deployment_id = aws_api_gateway_deployment.deployment.id
-}
-
-# -- Artifact Bucket --
-resource "random_id" "suffix" {
-  byte_length = 4
-}
-
-resource "aws_s3_bucket" "artifact_bucket" {
-  bucket        = "artifact-bucket-${random_id.suffix.hex}"
-  force_destroy = true
-}
-
-# -- CodeBuild Role --
-resource "aws_iam_role" "codebuild_role" {
-  name = "codebuild-service-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Effect    = "Allow",
-      Principal = { Service = "codebuild.amazonaws.com" },
-      Action    = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "codebuild_attach" {
-  role       = aws_iam_role.codebuild_role.name
-  policy_arn = "arn:aws:iam::aws:policy/AWSCodeBuildDeveloperAccess"
-}
-
-resource "aws_codebuild_project" "example_build" {
-  name         = "example-build-project"
-  service_role = aws_iam_role.codebuild_role.arn
-
-  artifacts {
-    type = "CODEPIPELINE"
-  }
-
-  environment {
-    compute_type    = "BUILD_GENERAL1_SMALL"
-    image           = "aws/codebuild/standard:5.0"
-    type            = "LINUX_CONTAINER"
-    privileged_mode = false
-  }
-
-  source {
-    type      = "CODEPIPELINE"
-    buildspec = "buildspec.yml"
+resource "aws_s3_bucket_versioning" "destination" {
+  bucket = aws_s3_bucket.destination.id
+  versioning_configuration {
+    status = "Enabled"
   }
 }
 
-# -- CodePipeline Role --
-resource "aws_iam_role" "codepipeline_role" {
-  name = "codepipeline-service-role"
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Effect    = "Allow",
-      Principal = { Service = "codepipeline.amazonaws.com" },
-      Action    = "sts:AssumeRole"
-    }]
-  })
+# Create source bucket
+resource "aws_s3_bucket" "source" {
+  provider = aws.east1
+  bucket   = "tf-fixed-source-bucket-67890"
 }
 
-resource "aws_iam_role_policy" "codepipeline_inline" {
-  name = "codepipeline-inline-policy"
-  role = aws_iam_role.codepipeline_role.id
-  policy = jsonencode({
-    Version = "2012-10-17",
-    Statement = [{
-      Effect   = "Allow",
-      Action   = [
-        "s3:*",
-        "codebuild:StartBuild",
-        "codebuild:BatchGetBuilds",
-        "lambda:InvokeFunction",
-        "iam:PassRole",
-        "codestar-connections:UseConnection"
-      ],
-      Resource = "*"
-    }]
-  })
-}
-
-# -- CodePipeline --
-resource "aws_codepipeline" "example_pipeline" {
-  name     = "example-pipeline"
-  role_arn = aws_iam_role.codepipeline_role.arn
-
-  artifact_store {
-    location = aws_s3_bucket.artifact_bucket.bucket
-    type     = "S3"
+resource "aws_s3_bucket_versioning" "source" {
+  provider = aws.east1
+  bucket   = aws_s3_bucket.source.id
+  versioning_configuration {
+    status = "Enabled"
   }
+}
 
-  stage {
-    name = "Source"
-    action {
-      name             = "Source"
-      category         = "Source"
-      owner            = "AWS"
-      provider         = "CodeStarSourceConnection"
-      version          = "1"
-      output_artifacts = ["source_output"]
-      configuration = {
-        ConnectionArn    = "arn:aws:codeconnections:us-east-1:975050191688:connection/30711670-72ef-46d5-9c9e-e89e98578f76"
-        FullRepositoryId = "VishalAerinIt/lambda-function"
-        BranchName       = "master"
-        DetectChanges    = "true"
-      }
+# IAM Role for replication
+data "aws_iam_policy_document" "assume_role" {
+  statement {
+    effect = "Allow"
+
+    principals {
+      type        = "Service"
+      identifiers = ["s3.amazonaws.com"]
     }
-  }
 
-  stage {
-    name = "Build"
-    action {
-      name             = "BuildAction"
-      category         = "Build"
-      owner            = "AWS"
-      provider         = "CodeBuild"
-      version          = "1"
-      input_artifacts  = ["source_output"]
-      output_artifacts = ["build_output"]
-      configuration = {
-        ProjectName = aws_codebuild_project.example_build.name
-      }
-    }
+    actions = ["sts:AssumeRole"]
   }
 }
 
-data "aws_caller_identity" "current" {}
+resource "aws_iam_role" "replication" {
+  name               = "tf-iam-role-replication-12345"
+  assume_role_policy = data.aws_iam_policy_document.assume_role.json
+}
 
-resource "aws_iam_role_policy" "codebuild_logging_policy" {
-  name = "codebuild-logging-policy"
-  role = aws_iam_role.codebuild_role.id
+# IAM policy document
+data "aws_iam_policy_document" "replication" {
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:GetReplicationConfiguration",
+      "s3:ListBucket"
+    ]
+    resources = [aws_s3_bucket.source.arn]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:GetObjectVersionForReplication",
+      "s3:GetObjectVersionAcl",
+      "s3:GetObjectVersionTagging"
+    ]
+    resources = ["${aws_s3_bucket.source.arn}/*"]
+  }
+
+  statement {
+    effect = "Allow"
+    actions = [
+      "s3:ReplicateObject",
+      "s3:ReplicateDelete",
+      "s3:ReplicateTags"
+    ]
+    resources = ["${aws_s3_bucket.destination.arn}/*"]
+  }
+}
+
+resource "aws_iam_policy" "replication" {
+  name   = "tf-iam-policy-replication-12345"
+  policy = data.aws_iam_policy_document.replication.json
+}
+
+resource "aws_iam_role_policy_attachment" "replication" {
+  role       = aws_iam_role.replication.name
+  policy_arn = aws_iam_policy.replication.arn
+}
+
+# Add bucket policy to source bucket to allow replication role access
+resource "aws_s3_bucket_policy" "source_policy" {
+  provider = aws.east1
+  bucket   = aws_s3_bucket.source.id
 
   policy = jsonencode({
     Version = "2012-10-17",
     Statement = [
       {
+        Sid    = "ReplicationPermissions",
         Effect = "Allow",
+        Principal = {
+          AWS = aws_iam_role.replication.arn
+        },
         Action = [
-          "logs:CreateLogGroup",
-          "logs:CreateLogStream",
-          "logs:PutLogEvents"
+          "s3:GetObjectVersion",
+          "s3:GetObjectVersionAcl",
+          "s3:GetObjectVersionTagging",
+          "s3:ReplicateObject",
+          "s3:ReplicateDelete",
+          "s3:ReplicateTags"
         ],
-        Resource = [
-          "arn:aws:logs:us-east-1:${data.aws_caller_identity.current.account_id}:log-group:/aws/codebuild/*",
-          "arn:aws:logs:us-east-1:${data.aws_caller_identity.current.account_id}:log-group:/aws/codebuild/*:log-stream:*"
-        ]
+        Resource = "${aws_s3_bucket.source.arn}/*"
       },
       {
+        Sid    = "ListBucketAndReplicationConfig",
         Effect = "Allow",
+        Principal = {
+          AWS = aws_iam_role.replication.arn
+        },
         Action = [
-          "s3:*",
-          "lambda:*"
+          "s3:ListBucket",
+          "s3:GetReplicationConfiguration"
         ],
-        Resource = "*"
+        Resource = aws_s3_bucket.source.arn
       }
     ]
   })
 }
 
-output "api_gateway_invoke_url" {
-  description = "The invoke URL of the deployed API Gateway stage"
-  value       = "https://${aws_api_gateway_rest_api.example_api.id}.execute-api.us-east-1.amazonaws.com/${aws_api_gateway_stage.dev.stage_name}/lambda"
+# Replication config
+resource "aws_s3_bucket_replication_configuration" "replication" {
+  provider   = aws.east1
+  depends_on = [
+    aws_s3_bucket_versioning.source,
+    aws_s3_bucket_policy.source_policy
+  ]
+
+  role   = aws_iam_role.replication.arn
+  bucket = aws_s3_bucket.source.id
+
+  rule {
+    id     = "example-rule"
+    status = "Enabled"
+
+    filter {
+      prefix = ""
+    }
+
+    delete_marker_replication {
+      status = "Disabled"
+    }
+
+    destination {
+      bucket        = aws_s3_bucket.destination.arn
+      storage_class = "STANDARD"
+    }
+  }
 }
